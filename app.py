@@ -5,6 +5,7 @@ import io
 import re
 import nltk
 from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
+from config import MODEL_CONFIG
 from sklearn.feature_extraction.text import TfidfVectorizer
 import numpy as np
 import warnings
@@ -23,8 +24,14 @@ except LookupError:
 
 # Initialize AI models
 print("Loading AI models...")
-sentiment_analyzer = pipeline("sentiment-analysis", model="cardiffnlp/twitter-roberta-base-sentiment-latest")
-classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+sentiment_analyzer = pipeline(
+    "sentiment-analysis",
+    model=MODEL_CONFIG.get("sentiment_model", "cardiffnlp/twitter-roberta-base-sentiment-latest")
+)
+classifier = pipeline(
+    "zero-shot-classification",
+    model=MODEL_CONFIG.get("classification_model", "facebook/bart-large-mnli")
+)
 
 # ATS keywords and categories
 ATS_KEYWORDS = {
@@ -50,37 +57,77 @@ ATS_KEYWORDS = {
     ]
 }
 
-def extract_text_from_file(file):
-    """Extract text from uploaded file (PDF, DOCX, or TXT)"""
-    if file is None:
+def extract_text_from_file(file_input):
+    """Extract text from uploaded file (PDF, DOCX, or TXT).
+
+    Supports Gradio 5 inputs which may be a string path, dict with 'path',
+    or a file-like object with .read() and .name.
+    """
+    if file_input is None:
         return ""
-    
-    try:
-        file_content = file.read()
-        filename = file.name.lower()
-        
-        if filename.endswith('.pdf'):
-            pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
-            text = ""
-            for page in pdf_reader.pages:
-                text += page.extract_text() + "\n"
-            return text
-            
-        elif filename.endswith('.docx'):
-            doc = docx.Document(io.BytesIO(file_content))
-            text = ""
-            for paragraph in doc.paragraphs:
-                text += paragraph.text + "\n"
-            return text
-            
-        elif filename.endswith('.txt'):
-            return file_content.decode('utf-8')
-            
-        else:
-            return "Unsupported file format. Please upload PDF, DOCX, or TXT files."
-            
-    except Exception as e:
-        return f"Error reading file: {str(e)}"
+
+    # Normalize to a file path and extension if possible
+    file_path = None
+    filename_lower = None
+
+    if isinstance(file_input, str):
+        file_path = file_input
+        filename_lower = file_input.lower()
+    elif isinstance(file_input, dict) and 'path' in file_input:
+        file_path = file_input['path']
+        filename_lower = file_path.lower()
+    elif hasattr(file_input, 'name') and hasattr(file_input, 'read'):
+        # file-like object
+        try:
+            content = file_input.read()
+            filename_lower = getattr(file_input, 'name', 'uploaded_file').lower()
+            if filename_lower.endswith('.pdf'):
+                try:
+                    reader = PyPDF2.PdfReader(io.BytesIO(content))
+                    pages_text = []
+                    for page in reader.pages:
+                        page_text = page.extract_text() or ""
+                        pages_text.append(page_text)
+                    return "\n".join(pages_text)
+                except Exception:
+                    pass  # fall through to error below
+            if filename_lower.endswith('.docx'):
+                try:
+                    doc = docx.Document(io.BytesIO(content))
+                    return "\n".join(p.text for p in doc.paragraphs)
+                except Exception:
+                    pass
+            if filename_lower.endswith('.txt'):
+                try:
+                    return content.decode('utf-8', errors='ignore')
+                except Exception:
+                    pass
+        except Exception as e:
+            return f"Error reading file: {str(e)}"
+
+    # If we have a file path, read from disk
+    if file_path and filename_lower:
+        try:
+            if filename_lower.endswith('.pdf'):
+                with open(file_path, 'rb') as f:
+                    reader = PyPDF2.PdfReader(f)
+                    pages_text = []
+                    for page in reader.pages:
+                        page_text = page.extract_text() or ""
+                        pages_text.append(page_text)
+                    return "\n".join(pages_text)
+            elif filename_lower.endswith('.docx'):
+                doc = docx.Document(file_path)
+                return "\n".join(p.text for p in doc.paragraphs)
+            elif filename_lower.endswith('.txt'):
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    return f.read()
+            else:
+                return "Unsupported file format. Please upload PDF, DOCX, or TXT files."
+        except Exception as e:
+            return f"Error reading file: {str(e)}"
+
+    return "Error reading file: Unrecognized file input type"
 
 def analyze_ats_keywords(text):
     """Analyze resume for ATS-friendly keywords"""
@@ -107,12 +154,19 @@ def analyze_sentiment_and_tone(text):
         sample_text = " ".join(sentences[:5])
         
         result = sentiment_analyzer(sample_text[:512])  # Limit length
-        
-        # Convert sentiment to professional score
-        if result[0]['label'] == 'LABEL_1':  # Positive
-            tone_score = min(95, 60 + (result[0]['score'] * 35))
-        else:  # Negative or Neutral
-            tone_score = max(30, 60 - (result[0]['score'] * 30))
+
+        # Normalize sentiment labels across different models
+        label = str(result[0].get('label', '')).lower()
+        score = float(result[0].get('score', 0.5))
+        is_positive = label in {"positive", "pos", "label_2", "label_1"}  # include common variants
+        is_negative = label in {"negative", "neg", "label_0"}
+
+        if is_positive:
+            tone_score = min(95, 60 + (score * 35))
+        elif is_negative:
+            tone_score = max(30, 60 - (score * 30))
+        else:  # neutral or unknown
+            tone_score = 60
             
         confidence = "High" if result[0]['score'] > 0.8 else "Medium" if result[0]['score'] > 0.5 else "Low"
         
@@ -137,7 +191,7 @@ def classify_resume_sections(text):
         
         for paragraph in paragraphs[:10]:  # Analyze first 10 paragraphs
             if len(paragraph) > 20:  # Skip very short paragraphs
-                result = classifier(paragraph[:512], sections)
+                result = classifier(paragraph[:512], candidate_labels=sections)
                 if result['scores'][0] > 0.3:  # Confidence threshold
                     classified_sections.add(result['labels'][0])
         
@@ -320,7 +374,8 @@ try:
             with gr.Column():
                 file_input = gr.File(
                     label="📄 Upload Resume (PDF/DOCX/TXT)", 
-                    file_types=[".pdf", ".docx", ".txt"]
+                    file_types=[".pdf", ".docx", ".txt"],
+                    type="filepath"
                 )
                 job_input = gr.Textbox(
                     label="🎯 Job Description (Optional)", 
@@ -343,7 +398,7 @@ try:
             outputs=output
         )
         
-        gr.Markdown("<center>Built with ❤️ by <a href='https://johnjandayan.com' target='_blank'>John Jandayan</a> | Powered by HuggingFace AI Models</center>")
+        gr.Markdown("<center>Built with ❤️ by <a href='https://portfolio-john-jandayan.vercel.app' target='_blank'>John Jandayan</a> | Powered by HuggingFace AI Models</center>")
 
 except Exception as e:
     print(f"Error creating Gradio Blocks interface: {e}")
@@ -352,7 +407,7 @@ except Exception as e:
         demo = gr.Interface(
             fn=analyze_resume,
             inputs=[
-                gr.File(label="Upload Resume", file_types=[".pdf", ".docx", ".txt"]),
+                gr.File(label="Upload Resume", file_types=[".pdf", ".docx", ".txt"], type="filepath"),
                 gr.Textbox(label="Job Description (Optional)", lines=5)
             ],
             outputs=gr.Textbox(label="Analysis Results", lines=20),
@@ -364,7 +419,7 @@ except Exception as e:
         demo = gr.Interface(
             fn=analyze_resume,
             inputs=[
-                gr.File(label="Upload Resume"),
+                gr.File(label="Upload Resume", type="filepath"),
                 gr.Textbox(label="Job Description", lines=3)
             ],
             outputs=gr.Textbox(label="Results", lines=15),
