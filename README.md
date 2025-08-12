@@ -29,6 +29,14 @@ datasets:
 
 An intelligent resume analysis tool that uses **real AI models** from HuggingFace to help job seekers optimize their resumes for Applicant Tracking Systems (ATS). Get comprehensive, AI-driven feedback and actionable suggestions for improvement.
 
+![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)
+![Gradio](https://img.shields.io/badge/Gradio-FF6B35?style=for-the-badge&logo=gradio&logoColor=white)
+![HuggingFace](https://img.shields.io/badge/🤗_Hugging_Face-FFD21E?style=for-the-badge&logoColor=black)
+![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=for-the-badge&logo=PyTorch&logoColor=white)
+![Pandas](https://img.shields.io/badge/pandas-%23150458.svg?style=for-the-badge&logo=pandas&logoColor=white)
+![NumPy](https://img.shields.io/badge/numpy-%23013243.svg?style=for-the-badge&logo=numpy&logoColor=white)
+
+
 ## 🌟 Features
 
 ### 🧠 **Real AI Analysis**
